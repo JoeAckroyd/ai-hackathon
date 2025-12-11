@@ -83,143 +83,13 @@ function formatDOMForAI(node, depth = 0, maxDepth = 8) {
   return result;
 }
 
-// Function to call OpenAI Chat Completions API
-async function callOpenAI(payload) {
-  console.log("[Server] callOpenAI invoked with payload:");
-  console.log("  - utterance:", payload.utterance);
-  console.log("  - url:", payload.url);
-  console.log("  - title:", payload.title);
-  console.log("  - pageText length:", payload.pageText?.length || 0);
-  console.log("  - DOM nodes:", payload.dom ? countDOMNodes(payload.dom) : 0);
-
+// Generic function to call OpenAI Chat Completions API
+async function callOpenAI(systemPrompt, userPrompt) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
     console.error("[Server] OPENAI_API_KEY is missing!");
     throw new Error("Missing OPENAI_API_KEY in environment");
   }
-  console.log("[Server] API key found:", apiKey.substring(0, 10) + "...");
-
-  const { utterance, url, title, pageText, dom, domTimestamp } = payload;
-
-  // Convert DOM tree to readable format for AI
-  const domDescription = dom ? formatDOMForAI(dom) : "No DOM available";
-
-  const systemPrompt = `
-You are a browser voice assistant that interprets user commands and controls the page.
-
-You receive:
-1. User's voice command (utterance)
-2. Current page URL and title
-3. Full DOM tree structure with all interactive elements
-
-You MUST respond with a single JSON object (no markdown, no extra text):
-{
-  "type": "command",
-  "action": "<action_name>",
-  "params": {<action_specific_params>},
-  "speakText": "<what to say to user>"
-}
-
-IMPORTANT: If the user asks ANY question about what's on the page (content, colors, elements, headings, buttons, links, text, etc.), use the "describe" action. Only use "navigate" for going to a different URL, and "click" for interacting with a specific element.
-
-AVAILABLE ACTIONS:
-
-1. "navigate" - Navigate to a URL based on natural language
-   - User says: "go to google", "navigate to facebook", "open youtube"
-   - You determine the appropriate URL
-   - params: { "url": "https://www.google.com" }
-   - speakText: "Navigating to Google"
-   - Navigation mapping:
-     * "google" → https://www.google.com
-     * "facebook" → https://www.facebook.com
-     * "youtube" → https://www.youtube.com
-     * "gmail", "email" → https://mail.google.com
-     * "twitter" → https://www.twitter.com
-     * "github" → https://www.github.com
-     * "reddit" → https://www.reddit.com
-     * "amazon" → https://www.amazon.com
-     * "netflix" → https://www.netflix.com
-     * For others, use your best judgment
-
-2. "describe" - Describe page content (USE THIS FOR ANY QUESTION ABOUT THE PAGE)
-   - User asks ANYTHING about the page content, elements, colors, text, or structure
-   - Examples:
-     * "what's on this page" → General overview
-     * "describe the page" → Detailed description
-     * "what are the headlines" → List all h1, h2, h3 elements with their text
-     * "what color is the button" → Analyze style.color and style.backgroundColor
-     * "what links are there" → List all <a> elements with their text and href
-     * "is there a login button" → Search for button/link containing "login"
-     * "what do you see" → Comprehensive description
-     * "what's the main heading" → Find h1 element
-     * "how many buttons are there" → Count all <button> elements
-     * "what's the background color" → Check body or main element backgroundColor
-   - Analyze the DOM tree (including style info) to answer the question
-   - params: {} (no params needed)
-   - speakText: "<answer based on DOM analysis>"
-   - Be specific and accurate - you have access to:
-     * All element tags, text content, attributes
-     * Color information (style.color, style.backgroundColor)
-     * Font sizes (style.fontSize)
-     * All semantic structure (headings, links, buttons, etc.)
-
-3. "click" - Click on an element based on natural language description
-   - User says: "click the login button", "press submit", "click on about us"
-   - Search DOM for matching element
-   - params: { "xpath": "<xpath_to_element>", "selector": "<css_selector>", "description": "<what_user_wanted>" }
-   - speakText: "Clicking on <description>"
-   - Element matching strategy:
-     * Match by text content: "login button" → find button with text "Login"
-     * Match by attributes: "search box" → find input with type="search"
-     * Match by aria-label: use aria-label attribute
-     * Match by position: "first link" → use DOM order
-     * For ambiguous matches, prefer first occurrence
-     * If no clear match found, return helpful speakText explaining the issue
-
-4. "navigateEmail" - Navigate to Gmail inbox (legacy action)
-   - params: {}
-   - speakText: "Opening your email inbox"
-
-5. "describePageContext" - Legacy Gmail context description
-6. "countUnreadEmails" - Legacy Gmail unread counting
-
-7. "none" - No action needed (small talk, unclear command)
-   - params: {}
-   - speakText: "<friendly response>"
-
-DOM STRUCTURE:
-The DOM is provided as a pseudo-HTML tree where each node has:
-- tag: HTML tag name
-- attrs: {id, class, href, aria-label, etc.}
-- style: {color, backgroundColor, fontSize} for key elements (headings, buttons, links)
-- text: visible text content
-- xpath: unique XPath identifier
-- children: array of child nodes
-
-The style field contains computed CSS values like:
-- color: rgb(255, 0, 0) or color name
-- backgroundColor: rgb(0, 0, 255) or color name
-- fontSize: 16px, 1.5em, etc.
-
-ELEMENT IDENTIFICATION RULES:
-1. Prioritize exact text matches
-2. Consider semantic HTML (button, a, input types)
-3. Use aria-label and title attributes
-4. For ambiguous matches, prefer first occurrence
-5. If no clear match, explain in speakText
-
-Return ONLY the JSON object. No markdown, no explanation.
-`.trim();
-
-  const userPrompt = `
-User utterance: "${utterance}"
-
-Page URL: ${url}
-Page title: ${title}
-
-DOM Structure:
-${domDescription}
-`.trim();
 
   console.log("[Server] Sending request to OpenAI API...");
   console.log("[Server] Using model: gpt-4o-mini");
@@ -287,6 +157,199 @@ ${domDescription}
   return parsed;
 }
 
+// Phase 1: Intent Classification Handler (NO DOM)
+async function handleIntentClassification(payload) {
+  const { utterance, url, title } = payload;
+
+  console.log("[Server] Phase 1: Intent Classification");
+  console.log("  - Utterance:", utterance);
+  console.log("  - URL:", url);
+  console.log("  - Title:", title);
+
+  const systemPrompt = `
+You are a browser voice assistant intent classifier.
+
+Analyze the user's utterance and determine:
+1. What action they want (navigate, describe, click, or none)
+2. Whether you need the DOM to complete the action
+
+Return JSON:
+{
+  "actionType": "navigate" | "describe" | "click" | "none",
+  "needsDOM": boolean,
+
+  // If needsDOM = false, include complete response:
+  "action": "navigate",
+  "params": { "url": "https://..." },
+  "speakText": "..."
+}
+
+RULES:
+
+1. "navigate" - User wants to go to a different URL
+   * needsDOM: false
+   * Include full response with URL mapping
+   * Examples: "go to google", "open youtube", "navigate to facebook"
+   * Navigation mapping:
+     - "google" → https://www.google.com
+     - "facebook" → https://www.facebook.com
+     - "youtube" → https://www.youtube.com
+     - "gmail", "email" → https://mail.google.com
+     - "twitter" → https://www.twitter.com
+     - "github" → https://www.github.com
+     - "reddit" → https://www.reddit.com
+     - "amazon" → https://www.amazon.com
+     - "netflix" → https://www.netflix.com
+   * Response format:
+     {
+       "actionType": "navigate",
+       "needsDOM": false,
+       "action": "navigate",
+       "params": { "url": "https://www.google.com" },
+       "speakText": "Navigating to Google"
+     }
+
+2. "describe" - User asks ANY question about the page
+   * needsDOM: true
+   * Examples: "what's on this page", "what are the headlines", "what color is the button"
+   * Response format:
+     {
+       "actionType": "describe",
+       "needsDOM": true
+     }
+
+3. "click" - User wants to interact with an element
+   * needsDOM: true
+   * Examples: "click the login button", "press submit", "click on about us"
+   * Response format:
+     {
+       "actionType": "click",
+       "needsDOM": true
+     }
+
+4. "none" - Small talk, no action needed
+   * needsDOM: false
+   * Examples: "hello", "thank you", "how are you"
+   * Response format:
+     {
+       "actionType": "none",
+       "needsDOM": false,
+       "action": "none",
+       "params": {},
+       "speakText": "<friendly response>"
+     }
+
+Return ONLY the JSON object. No markdown, no explanation.
+`.trim();
+
+  const userPrompt = `
+User utterance: "${utterance}"
+Current page URL: ${url}
+Current page title: ${title}
+`.trim();
+
+  const result = await callOpenAI(systemPrompt, userPrompt);
+  return result;
+}
+
+// Phase 2: DOM Analysis Handler (WITH DOM)
+async function handleDOMAnalysis(payload) {
+  const { actionType, utterance, url, title, dom, domTimestamp } = payload;
+
+  console.log("[Server] Phase 2: DOM Analysis");
+  console.log("  - Action type:", actionType);
+  console.log("  - Utterance:", utterance);
+  console.log("  - DOM nodes:", dom ? countDOMNodes(dom) : 0);
+
+  // Format DOM for AI
+  const domDescription = dom ? formatDOMForAI(dom) : "No DOM available";
+
+  let systemPrompt = '';
+
+  if (actionType === 'describe') {
+    systemPrompt = `
+You are a browser voice assistant answering questions about the page.
+
+Analyze the DOM and answer the user's question.
+
+You have access to:
+- All element tags, text content, attributes
+- Color information (style.color, style.backgroundColor)
+- Font sizes (style.fontSize)
+- All semantic structure (headings, links, buttons, etc.)
+
+Return JSON:
+{
+  "action": "describe",
+  "params": {},
+  "speakText": "<answer based on DOM analysis>"
+}
+
+Be specific and accurate. Answer the exact question asked.
+
+DOM STRUCTURE:
+- tag: HTML tag name
+- attrs: {id, class, href, aria-label, etc.}
+- style: {color, backgroundColor, fontSize} for key elements
+- text: visible text content
+- xpath: unique XPath identifier
+- children: array of child nodes
+
+Return ONLY the JSON object. No markdown, no explanation.
+`.trim();
+
+  } else if (actionType === 'click') {
+    systemPrompt = `
+You are a browser voice assistant finding elements to click.
+
+Find the element the user wants to click in the DOM.
+
+Return JSON:
+{
+  "action": "click",
+  "params": {
+    "xpath": "<xpath_to_element>",
+    "selector": "<css_selector>",
+    "description": "<what_user_wanted>"
+  },
+  "speakText": "Clicking on <description>"
+}
+
+Element matching strategy:
+- Match by text content: "login button" → find button with text "Login"
+- Match by attributes: "search box" → find input with type="search"
+- Match by aria-label: use aria-label attribute
+- Match by position: "first link" → use DOM order
+- For ambiguous matches, prefer first occurrence
+- If no clear match found, return helpful speakText explaining the issue
+
+DOM STRUCTURE:
+- tag: HTML tag name
+- attrs: {id, class, href, aria-label, etc.}
+- style: {color, backgroundColor, fontSize} for key elements
+- text: visible text content
+- xpath: unique XPath identifier (use this for params.xpath)
+- children: array of child nodes
+
+Return ONLY the JSON object. No markdown, no explanation.
+`.trim();
+  } else {
+    throw new Error(`Unknown actionType: ${actionType}`);
+  }
+
+  const userPrompt = `
+User utterance: "${utterance}"
+Page URL: ${url}
+Page title: ${title}
+
+DOM Structure:
+${domDescription}
+`.trim();
+
+  const result = await callOpenAI(systemPrompt, userPrompt);
+  return result;
+}
+
 // Handle preflight requests explicitly
 app.options("/api/voice-command", (req, res) => {
   console.log("[Server] OPTIONS /api/voice-command - Preflight request received");
@@ -297,28 +360,47 @@ app.options("/api/voice-command", (req, res) => {
   res.sendStatus(200);
 });
 
-// POST endpoint for voice commands
+// POST endpoint for voice commands (handles both phases)
 app.post("/api/voice-command", async (req, res) => {
   console.log("\n[Server] ========================================");
   console.log("[Server] POST /api/voice-command - Request received");
-  console.log("[Server] Request body keys:", Object.keys(req.body || {}));
 
   try {
-    const { utterance, url, title, pageText, dom, domTimestamp } = req.body || {};
+    const { type, payload } = req.body || {};
 
-    if (!utterance || typeof utterance !== "string") {
-      console.error("[Server] Missing or invalid 'utterance' in request body");
-      return res
-        .status(400)
-        .json({ error: "Missing 'utterance' in request body" });
+    console.log("[Server] Request type:", type);
+    console.log("[Server] Payload keys:", Object.keys(payload || {}));
+
+    let result;
+
+    if (type === "VOICE_COMMAND_INTENT") {
+      // Phase 1: Intent Classification (NO DOM)
+      const { utterance } = payload || {};
+      if (!utterance || typeof utterance !== "string") {
+        console.error("[Server] Missing or invalid 'utterance' in Phase 1 request");
+        return res.status(400).json({ error: "Missing 'utterance' in request body" });
+      }
+
+      result = await handleIntentClassification(payload);
+
+    } else if (type === "VOICE_COMMAND_DOM") {
+      // Phase 2: DOM Analysis (WITH DOM)
+      const { actionType, utterance } = payload || {};
+      if (!actionType || !utterance) {
+        console.error("[Server] Missing actionType or utterance in Phase 2 request");
+        return res.status(400).json({ error: "Missing required fields for Phase 2" });
+      }
+
+      result = await handleDOMAnalysis(payload);
+
+    } else {
+      console.error("[Server] Unknown request type:", type);
+      return res.status(400).json({ error: "Unknown request type. Expected VOICE_COMMAND_INTENT or VOICE_COMMAND_DOM" });
     }
-
-    console.log("[Server] Calling OpenAI with utterance:", utterance);
-    const result = await callOpenAI({ utterance, url, title, pageText, dom, domTimestamp });
 
     // Ensure we always send a sane object
     if (!result || typeof result !== "object") {
-      console.error("[Server] Invalid result from OpenAI, sending fallback");
+      console.error("[Server] Invalid result from handler, sending fallback");
       return res.json({
         type: "command",
         action: "none",
@@ -330,6 +412,7 @@ app.post("/api/voice-command", async (req, res) => {
     console.log("[Server] Sending successful response:", result);
     console.log("[Server] ========================================\n");
     return res.json(result);
+
   } catch (err) {
     console.error("[Server] Error in /api/voice-command:", err);
     console.error("[Server] Error stack:", err.stack);
