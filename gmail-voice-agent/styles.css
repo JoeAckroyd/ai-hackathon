@@ -1,0 +1,192 @@
+/*
+ * Gmail Voice Agent - Styles
+ * Visual indicator and UI elements for the voice agent
+ */
+
+/* ============================================
+   FLOATING INDICATOR - Shows agent status
+   ============================================ */
+
+#gmail-voice-agent-indicator {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 999999;
+  
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  
+  padding: 12px 20px;
+  border-radius: 50px;
+  
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+  box-shadow: 
+    0 4px 24px rgba(0, 0, 0, 0.3),
+    0 0 0 1px rgba(255, 255, 255, 0.1);
+  
+  font-family: 'Google Sans', 'Segoe UI', system-ui, sans-serif;
+  font-size: 14px;
+  font-weight: 500;
+  color: #ffffff;
+  
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  transform: translateY(100px);
+  opacity: 0;
+  pointer-events: none;
+}
+
+#gmail-voice-agent-indicator.visible {
+  transform: translateY(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* ============================================
+   PULSING ORB - Animated status indicator
+   ============================================ */
+
+.voice-agent-orb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #4ade80;
+  position: relative;
+  flex-shrink: 0;
+}
+
+/* Idle state - gentle pulse */
+.voice-agent-orb::before {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  background: rgba(74, 222, 128, 0.3);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+/* Listening state - active animation */
+#gmail-voice-agent-indicator.listening .voice-agent-orb {
+  background: #60a5fa;
+}
+
+#gmail-voice-agent-indicator.listening .voice-agent-orb::before {
+  background: rgba(96, 165, 250, 0.4);
+  animation: pulse-fast 0.8s ease-in-out infinite;
+}
+
+/* Speaking state - different color */
+#gmail-voice-agent-indicator.speaking .voice-agent-orb {
+  background: #f472b6;
+}
+
+#gmail-voice-agent-indicator.speaking .voice-agent-orb::before {
+  background: rgba(244, 114, 182, 0.4);
+  animation: pulse-speak 0.5s ease-in-out infinite;
+}
+
+/* ============================================
+   STATUS TEXT
+   ============================================ */
+
+.voice-agent-status {
+  white-space: nowrap;
+}
+
+/* ============================================
+   KEYBOARD HINT
+   ============================================ */
+
+.voice-agent-hint {
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.1);
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.6);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* ============================================
+   ANIMATIONS
+   ============================================ */
+
+@keyframes pulse {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 0.6;
+  }
+  50% {
+    transform: scale(1.3);
+    opacity: 0.3;
+  }
+}
+
+@keyframes pulse-fast {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 0.7;
+  }
+  50% {
+    transform: scale(1.5);
+    opacity: 0.2;
+  }
+}
+
+@keyframes pulse-speak {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 0.8;
+  }
+  50% {
+    transform: scale(1.8);
+    opacity: 0.1;
+  }
+}
+
+/* ============================================
+   TRANSCRIPT OVERLAY (optional debug view)
+   ============================================ */
+
+#gmail-voice-agent-transcript {
+  position: fixed;
+  bottom: 90px;
+  right: 24px;
+  z-index: 999998;
+  
+  max-width: 350px;
+  padding: 16px;
+  border-radius: 12px;
+  
+  background: rgba(26, 26, 46, 0.95);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.3);
+  
+  font-family: 'Google Sans', 'Segoe UI', system-ui, sans-serif;
+  font-size: 13px;
+  color: #e2e8f0;
+  line-height: 1.5;
+  
+  transform: translateY(20px);
+  opacity: 0;
+  transition: all 0.3s ease;
+  pointer-events: none;
+}
+
+#gmail-voice-agent-transcript.visible {
+  transform: translateY(0);
+  opacity: 1;
+}
+
+#gmail-voice-agent-transcript .transcript-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: #94a3b8;
+  margin-bottom: 8px;
+}
+
+#gmail-voice-agent-transcript .transcript-text {
+  color: #ffffff;
+}
+
