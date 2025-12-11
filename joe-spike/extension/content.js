@@ -18,6 +18,188 @@
   let listening = false;
   let recognition = null;
 
+  // DOM Capture State
+  let cachedDOM = null;
+  let domCaptureTimestamp = null;
+
+  // Helper: Generate XPath for an element
+  function generateXPath(element) {
+    if (!element || element.nodeType !== Node.ELEMENT_NODE) {
+      return '';
+    }
+
+    // If element has an ID, use it for shorter XPath
+    if (element.id) {
+      return `//*[@id="${element.id}"]`;
+    }
+
+    const parts = [];
+    let current = element;
+
+    while (current && current.nodeType === Node.ELEMENT_NODE && current.tagName.toLowerCase() !== 'html') {
+      let index = 1;
+      let sibling = current.previousSibling;
+
+      while (sibling) {
+        if (sibling.nodeType === Node.ELEMENT_NODE && sibling.tagName === current.tagName) {
+          index++;
+        }
+        sibling = sibling.previousSibling;
+      }
+
+      const tagName = current.tagName.toLowerCase();
+      const part = index > 1 ? `${tagName}[${index}]` : tagName;
+      parts.unshift(part);
+
+      current = current.parentNode;
+    }
+
+    return '/' + parts.join('/');
+  }
+
+  // Helper: Serialize element to JSON tree
+  function serializeElement(element, depth, maxDepth = 10) {
+    // Base case: too deep
+    if (depth > maxDepth) {
+      return null;
+    }
+
+    // Skip non-element nodes
+    if (!element || element.nodeType !== Node.ELEMENT_NODE) {
+      return null;
+    }
+
+    const tagName = element.tagName.toLowerCase();
+
+    // Filter out unwanted elements
+    if (['script', 'style', 'noscript', 'svg', 'iframe'].includes(tagName)) {
+      return null;
+    }
+
+    // Check if element is visible and capture style info
+    let computedStyle = null;
+    try {
+      computedStyle = window.getComputedStyle(element);
+      if (computedStyle.display === 'none' ||
+          computedStyle.visibility === 'hidden' ||
+          parseFloat(computedStyle.opacity) === 0 ||
+          element.getAttribute('aria-hidden') === 'true') {
+        return null;
+      }
+    } catch (e) {
+      // Some elements may not have computed style, skip them
+      return null;
+    }
+
+    // Build element representation
+    const node = {
+      tag: tagName,
+      attrs: {},
+      text: '',
+      xpath: generateXPath(element),
+      style: {},
+      children: []
+    };
+
+    // Capture relevant computed styles for important elements
+    // Only capture for interactive or semantic elements to reduce size
+    const captureStyleFor = ['a', 'button', 'input', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'nav', 'header', 'footer'];
+    if (computedStyle && captureStyleFor.includes(tagName)) {
+      // Capture color information
+      const color = computedStyle.color;
+      const bgColor = computedStyle.backgroundColor;
+      const fontSize = computedStyle.fontSize;
+
+      if (color && color !== 'rgb(0, 0, 0)') { // Skip default black
+        node.style.color = color;
+      }
+      if (bgColor && bgColor !== 'rgba(0, 0, 0, 0)') { // Skip transparent
+        node.style.backgroundColor = bgColor;
+      }
+      if (fontSize) {
+        node.style.fontSize = fontSize;
+      }
+    }
+
+    // Capture relevant attributes
+    const relevantAttrs = ['id', 'class', 'href', 'src', 'alt', 'title',
+                           'type', 'value', 'placeholder', 'aria-label',
+                           'role', 'name', 'data-testid'];
+    relevantAttrs.forEach(attr => {
+      const val = element.getAttribute(attr);
+      if (val && val.length < 200) { // Skip very long attribute values
+        node.attrs[attr] = val;
+      }
+    });
+
+    // Capture immediate text content (not from children)
+    const immediateText = Array.from(element.childNodes)
+      .filter(n => n.nodeType === Node.TEXT_NODE)
+      .map(n => n.textContent.trim())
+      .filter(t => t.length > 0)
+      .join(' ')
+      .slice(0, 100); // Truncate long text
+
+    if (immediateText) {
+      node.text = immediateText;
+    }
+
+    // Recursively process children
+    const children = Array.from(element.children);
+    for (let i = 0; i < children.length; i++) {
+      const serialized = serializeElement(children[i], depth + 1, maxDepth);
+      if (serialized) {
+        node.children.push(serialized);
+      }
+    }
+
+    return node;
+  }
+
+  // Capture and cache DOM tree
+  function captureDOM() {
+    console.log("[VoiceAssistant] Capturing DOM tree...");
+    const startTime = performance.now();
+
+    const domTree = serializeElement(document.body, 0);
+    const serialized = JSON.stringify(domTree);
+    const sizeKB = (serialized.length / 1024).toFixed(2);
+
+    const endTime = performance.now();
+    const duration = (endTime - startTime).toFixed(2);
+
+    console.log(`[VoiceAssistant] DOM captured in ${duration}ms`);
+    console.log(`[VoiceAssistant] Serialized size: ${sizeKB}KB`);
+
+    cachedDOM = domTree;
+    domCaptureTimestamp = Date.now();
+
+    return domTree;
+  }
+
+  // Setup DOM watcher for dynamic content (SPAs, AJAX)
+  function setupDOMWatcher() {
+    console.log("[VoiceAssistant] Setting up DOM mutation observer...");
+
+    const observer = new MutationObserver((mutations) => {
+      // Debounce: only recapture after 500ms of no changes
+      clearTimeout(window.domCaptureTimeout);
+      window.domCaptureTimeout = setTimeout(() => {
+        console.log("[VoiceAssistant] DOM changed, recapturing...");
+        captureDOM();
+      }, 500);
+    });
+
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: false // Don't track attribute changes to reduce noise
+    });
+
+    console.log("[VoiceAssistant] DOM mutation observer active");
+    return observer;
+  }
+
   // Create floating microphone button
   const micButton = document.createElement("button");
   micButton.textContent = "🎙️";
@@ -108,6 +290,91 @@
     window.speechSynthesis.speak(utterance);
   }
 
+  // Action: Navigate to URL
+  function handleNavigate(params) {
+    const { url } = params;
+
+    if (!url) {
+      console.error("[VoiceAssistant] No URL provided for navigation");
+      speak("Sorry, I couldn't determine where to navigate.");
+      return;
+    }
+
+    console.log("[VoiceAssistant] Navigating to:", url);
+    window.location.href = url;
+  }
+
+  // Action: Click on element
+  function handleClick(params) {
+    const { xpath, selector, description } = params;
+
+    console.log("[VoiceAssistant] Attempting to click element:");
+    console.log("  - XPath:", xpath);
+    console.log("  - Selector:", selector);
+    console.log("  - Description:", description);
+
+    let element = null;
+
+    // Try CSS selector first (more reliable)
+    if (selector) {
+      try {
+        element = document.querySelector(selector);
+        if (element) {
+          console.log("[VoiceAssistant] Found element via selector:", selector);
+        }
+      } catch (e) {
+        console.warn("[VoiceAssistant] Invalid selector:", selector, e);
+      }
+    }
+
+    // Fallback to XPath
+    if (!element && xpath) {
+      try {
+        const result = document.evaluate(
+          xpath,
+          document,
+          null,
+          XPathResult.FIRST_ORDERED_NODE_TYPE,
+          null
+        );
+        element = result.singleNodeValue;
+        if (element) {
+          console.log("[VoiceAssistant] Found element via XPath:", xpath);
+        }
+      } catch (e) {
+        console.warn("[VoiceAssistant] Invalid XPath:", xpath, e);
+      }
+    }
+
+    if (element) {
+      console.log("[VoiceAssistant] Found element, preparing to click:", element);
+
+      // Scroll into view
+      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+      // Highlight element for visual feedback
+      const originalOutline = element.style.outline;
+      element.style.outline = '3px solid #007bff';
+
+      setTimeout(() => {
+        // Restore original outline
+        element.style.outline = originalOutline;
+
+        // Click the element
+        element.click();
+        console.log("[VoiceAssistant] Clicked element successfully");
+
+        const desc = description || 'the element';
+        speak(`Clicked on ${desc}`);
+      }, 300);
+    } else {
+      console.error("[VoiceAssistant] Could not find element to click");
+      console.error("  - Tried XPath:", xpath);
+      console.error("  - Tried selector:", selector);
+      speak("Sorry, I couldn't find that element on the page.");
+    }
+  }
+
   // Handle transcript from speech recognition
   function handleTranscript(text) {
     console.log("[VoiceAssistant] handleTranscript called with:", text);
@@ -119,17 +386,29 @@
         ? document.body.innerText.slice(0, 2000)
         : "";
 
+    // Include cached DOM tree
+    const domTree = cachedDOM || captureDOM();
+    const domAge = domCaptureTimestamp ? Date.now() - domCaptureTimestamp : 0;
+
     console.log("[VoiceAssistant] Collected page context:");
     console.log("  - URL:", url);
     console.log("  - Title:", title);
     console.log("  - Page text length:", pageText.length);
+    console.log(`  - DOM snapshot age: ${domAge}ms`);
 
     console.log("[VoiceAssistant] Sending message to background script...");
 
     chrome.runtime.sendMessage(
       {
         type: "VOICE_COMMAND",
-        payload: { utterance: text, url, title, pageText },
+        payload: {
+          utterance: text,
+          url,
+          title,
+          pageText,
+          dom: domTree,
+          domTimestamp: domCaptureTimestamp
+        },
       },
       (response) => {
         console.log("[VoiceAssistant] Received response from background:", response);
@@ -172,9 +451,17 @@
     console.log("  - action:", action);
     console.log("  - params:", params);
 
-    if (action === "navigateEmail") {
+    if (action === "navigate") {
+      console.log("[VoiceAssistant] Executing navigate action...");
+      handleNavigate(params);
+    } else if (action === "describe") {
+      console.log("[VoiceAssistant] Executing describe action (AI-generated description)");
+      // Description is in speakText, no client-side action needed
+    } else if (action === "click") {
+      console.log("[VoiceAssistant] Executing click action...");
+      handleClick(params);
+    } else if (action === "navigateEmail") {
       console.log("[VoiceAssistant] Navigating to Gmail inbox...");
-      // Navigate to Gmail inbox (demo)
       window.location.href = "https://mail.google.com/mail/u/0/#inbox";
     } else if (action === "describePageContext") {
       console.log("[VoiceAssistant] Describing page context...");
@@ -266,4 +553,26 @@
       speak(`You have ${unreadCount} unread emails.`);
     }
   }
+
+  // Initialize DOM capture on page load
+  console.log("[VoiceAssistant] Setting up DOM capture listeners...");
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => {
+      console.log("[VoiceAssistant] DOMContentLoaded event fired");
+      captureDOM();
+      setupDOMWatcher();
+    });
+  } else {
+    // DOM already loaded
+    console.log("[VoiceAssistant] DOM already loaded, capturing immediately");
+    captureDOM();
+    setupDOMWatcher();
+  }
+
+  // Also capture on window load for fully loaded resources
+  window.addEventListener('load', () => {
+    console.log("[VoiceAssistant] Window load event fired");
+    captureDOM();
+  });
 })();
