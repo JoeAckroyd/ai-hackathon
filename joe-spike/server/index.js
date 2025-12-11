@@ -22,6 +22,56 @@ app.use((req, res, next) => {
 
 app.use(express.json()); // parse JSON bodies
 
+// Helper: Count DOM nodes
+function countDOMNodes(node) {
+  if (!node) return 0;
+  return 1 + (node.children || []).reduce((sum, c) => sum + countDOMNodes(c), 0);
+}
+
+// Helper: Format DOM tree for AI consumption
+function formatDOMForAI(node, depth = 0, maxDepth = 8) {
+  if (!node || depth > maxDepth) {
+    return '';
+  }
+
+  const indent = '  '.repeat(depth);
+  const tag = node.tag;
+
+  // Format attributes
+  let attrStr = '';
+  if (node.attrs && Object.keys(node.attrs).length > 0) {
+    const relevantAttrs = Object.entries(node.attrs)
+      .filter(([k, v]) => v && v.toString().length < 100)
+      .map(([k, v]) => `${k}="${v}"`)
+      .join(' ');
+    if (relevantAttrs) {
+      attrStr = ' ' + relevantAttrs;
+    }
+  }
+
+  // Format text
+  const text = node.text ? ` text="${node.text}"` : '';
+
+  // XPath for identification
+  const xpath = node.xpath ? ` xpath="${node.xpath}"` : '';
+
+  let result = `${indent}<${tag}${attrStr}${text}${xpath}>\n`;
+
+  // Process children
+  if (node.children && node.children.length > 0) {
+    // Limit children to prevent explosion
+    const childrenToShow = node.children.slice(0, 20);
+    childrenToShow.forEach(child => {
+      result += formatDOMForAI(child, depth + 1, maxDepth);
+    });
+    if (node.children.length > 20) {
+      result += `${indent}  ... (${node.children.length - 20} more children)\n`;
+    }
+  }
+
+  return result;
+}
+
 // Function to call OpenAI Chat Completions API
 async function callOpenAI(payload) {
   console.log("[Server] callOpenAI invoked with payload:");
@@ -29,6 +79,7 @@ async function callOpenAI(payload) {
   console.log("  - url:", payload.url);
   console.log("  - title:", payload.title);
   console.log("  - pageText length:", payload.pageText?.length || 0);
+  console.log("  - DOM nodes:", payload.dom ? countDOMNodes(payload.dom) : 0);
 
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
@@ -37,41 +88,96 @@ async function callOpenAI(payload) {
   }
   console.log("[Server] API key found:", apiKey.substring(0, 10) + "...");
 
-  const { utterance, url, title, pageText } = payload;
+  const { utterance, url, title, pageText, dom, domTimestamp } = payload;
+
+  // Convert DOM tree to readable format for AI
+  const domDescription = dom ? formatDOMForAI(dom) : "No DOM available";
 
   const systemPrompt = `
-You are a browser voice assistant that controls the page via a content script.
-You MUST respond with a single JSON object, no extra text, no markdown.
-Shape:
+You are a browser voice assistant that interprets user commands and controls the page.
+
+You receive:
+1. User's voice command (utterance)
+2. Current page URL and title
+3. Full DOM tree structure with all interactive elements
+
+You MUST respond with a single JSON object (no markdown, no extra text):
 {
   "type": "command",
-  "action": "<string>",
-  "params": {},
-  "speakText": "<string the extension should say aloud>"
+  "action": "<action_name>",
+  "params": {<action_specific_params>},
+  "speakText": "<what to say to user>"
 }
 
-Valid actions:
+AVAILABLE ACTIONS:
 
-* "navigateEmail"       // navigate to Gmail inbox page
-* "describePageContext" // ask the content script to verbally describe whether the user is in their inbox
-* "countUnreadEmails"   // ask the content script to count unread emails in the current view
-* "none"                // for small talk or when no browser action is needed
+1. "navigate" - Navigate to a URL based on natural language
+   - User says: "go to google", "navigate to facebook", "open youtube"
+   - You determine the appropriate URL
+   - params: { "url": "https://www.google.com" }
+   - speakText: "Navigating to Google"
+   - Navigation mapping:
+     * "google" → https://www.google.com
+     * "facebook" → https://www.facebook.com
+     * "youtube" → https://www.youtube.com
+     * "gmail", "email" → https://mail.google.com
+     * "twitter" → https://www.twitter.com
+     * "github" → https://www.github.com
+     * "reddit" → https://www.reddit.com
+     * "amazon" → https://www.amazon.com
+     * "netflix" → https://www.netflix.com
+     * For others, use your best judgment
 
-Rules:
+2. "describe" - Describe page content at varying levels of detail
+   - User says: "what's on this page", "describe the page", "what do you see"
+   - Analyze the DOM tree to provide relevant description
+   - params: {} (no params needed)
+   - speakText: "<detailed description based on DOM>"
+   - Granularity examples:
+     * General: "This is Google's homepage with a search box and navigation links"
+     * Specific: "I see a search button, Google logo, and links to Gmail and Images"
+     * Very specific: "There are 15 interactive elements including buttons and links"
 
-* If user says something like "go to my email", "open my inbox", "go to gmail":
-  * action: "navigateEmail", params: {}, speakText: "Opening your email inbox."
-* If user says something like "where am I", "am I in my inbox":
-  * action: "describePageContext", params: {}, speakText: "Let me check where you are."
-* If user asks about unread emails, e.g. "how many unread emails do I have":
-  * action: "countUnreadEmails", params: {}, speakText: "I'll count your unread emails."
-* For casual chat or anything else that does not clearly match the above:
-  * action: "none"
-  * params: {}
-  * speakText: a short, friendly spoken reply.
+3. "click" - Click on an element based on natural language description
+   - User says: "click the login button", "press submit", "click on about us"
+   - Search DOM for matching element
+   - params: { "xpath": "<xpath_to_element>", "selector": "<css_selector>", "description": "<what_user_wanted>" }
+   - speakText: "Clicking on <description>"
+   - Element matching strategy:
+     * Match by text content: "login button" → find button with text "Login"
+     * Match by attributes: "search box" → find input with type="search"
+     * Match by aria-label: use aria-label attribute
+     * Match by position: "first link" → use DOM order
+     * For ambiguous matches, prefer first occurrence
+     * If no clear match found, return helpful speakText explaining the issue
 
-Do NOT wrap the JSON in backticks or markdown.
-Return ONLY the JSON object.
+4. "navigateEmail" - Navigate to Gmail inbox (legacy action)
+   - params: {}
+   - speakText: "Opening your email inbox"
+
+5. "describePageContext" - Legacy Gmail context description
+6. "countUnreadEmails" - Legacy Gmail unread counting
+
+7. "none" - No action needed (small talk, unclear command)
+   - params: {}
+   - speakText: "<friendly response>"
+
+DOM STRUCTURE:
+The DOM is provided as a pseudo-HTML tree where each node has:
+- tag: HTML tag name
+- attrs: {id, class, href, aria-label, etc.}
+- text: visible text content
+- xpath: unique XPath identifier
+- children: array of child nodes
+
+ELEMENT IDENTIFICATION RULES:
+1. Prioritize exact text matches
+2. Consider semantic HTML (button, a, input types)
+3. Use aria-label and title attributes
+4. For ambiguous matches, prefer first occurrence
+5. If no clear match, explain in speakText
+
+Return ONLY the JSON object. No markdown, no explanation.
 `.trim();
 
   const userPrompt = `
@@ -80,12 +186,14 @@ User utterance: "${utterance}"
 Page URL: ${url}
 Page title: ${title}
 
-Page text (truncated):
-"""${pageText || ""}"""
+DOM Structure:
+${domDescription}
 `.trim();
 
   console.log("[Server] Sending request to OpenAI API...");
   console.log("[Server] Using model: gpt-4o-mini");
+  console.log("[Server] System prompt length:", systemPrompt.length);
+  console.log("[Server] User prompt length:", userPrompt.length);
 
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -162,10 +270,10 @@ app.options("/api/voice-command", (req, res) => {
 app.post("/api/voice-command", async (req, res) => {
   console.log("\n[Server] ========================================");
   console.log("[Server] POST /api/voice-command - Request received");
-  console.log("[Server] Request body:", req.body);
+  console.log("[Server] Request body keys:", Object.keys(req.body || {}));
 
   try {
-    const { utterance, url, title, pageText } = req.body || {};
+    const { utterance, url, title, pageText, dom, domTimestamp } = req.body || {};
 
     if (!utterance || typeof utterance !== "string") {
       console.error("[Server] Missing or invalid 'utterance' in request body");
@@ -175,7 +283,7 @@ app.post("/api/voice-command", async (req, res) => {
     }
 
     console.log("[Server] Calling OpenAI with utterance:", utterance);
-    const result = await callOpenAI({ utterance, url, title, pageText });
+    const result = await callOpenAI({ utterance, url, title, pageText, dom, domTimestamp });
 
     // Ensure we always send a sane object
     if (!result || typeof result !== "object") {
