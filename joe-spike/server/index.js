@@ -49,13 +49,24 @@ function formatDOMForAI(node, depth = 0, maxDepth = 8) {
     }
   }
 
+  // Format style
+  let styleStr = '';
+  if (node.style && Object.keys(node.style).length > 0) {
+    const styleInfo = Object.entries(node.style)
+      .map(([k, v]) => `${k}:${v}`)
+      .join(';');
+    if (styleInfo) {
+      styleStr = ` style="${styleInfo}"`;
+    }
+  }
+
   // Format text
   const text = node.text ? ` text="${node.text}"` : '';
 
   // XPath for identification
   const xpath = node.xpath ? ` xpath="${node.xpath}"` : '';
 
-  let result = `${indent}<${tag}${attrStr}${text}${xpath}>\n`;
+  let result = `${indent}<${tag}${attrStr}${styleStr}${text}${xpath}>\n`;
 
   // Process children
   if (node.children && node.children.length > 0) {
@@ -109,6 +120,8 @@ You MUST respond with a single JSON object (no markdown, no extra text):
   "speakText": "<what to say to user>"
 }
 
+IMPORTANT: If the user asks ANY question about what's on the page (content, colors, elements, headings, buttons, links, text, etc.), use the "describe" action. Only use "navigate" for going to a different URL, and "click" for interacting with a specific element.
+
 AVAILABLE ACTIONS:
 
 1. "navigate" - Navigate to a URL based on natural language
@@ -128,15 +141,27 @@ AVAILABLE ACTIONS:
      * "netflix" → https://www.netflix.com
      * For others, use your best judgment
 
-2. "describe" - Describe page content at varying levels of detail
-   - User says: "what's on this page", "describe the page", "what do you see"
-   - Analyze the DOM tree to provide relevant description
+2. "describe" - Describe page content (USE THIS FOR ANY QUESTION ABOUT THE PAGE)
+   - User asks ANYTHING about the page content, elements, colors, text, or structure
+   - Examples:
+     * "what's on this page" → General overview
+     * "describe the page" → Detailed description
+     * "what are the headlines" → List all h1, h2, h3 elements with their text
+     * "what color is the button" → Analyze style.color and style.backgroundColor
+     * "what links are there" → List all <a> elements with their text and href
+     * "is there a login button" → Search for button/link containing "login"
+     * "what do you see" → Comprehensive description
+     * "what's the main heading" → Find h1 element
+     * "how many buttons are there" → Count all <button> elements
+     * "what's the background color" → Check body or main element backgroundColor
+   - Analyze the DOM tree (including style info) to answer the question
    - params: {} (no params needed)
-   - speakText: "<detailed description based on DOM>"
-   - Granularity examples:
-     * General: "This is Google's homepage with a search box and navigation links"
-     * Specific: "I see a search button, Google logo, and links to Gmail and Images"
-     * Very specific: "There are 15 interactive elements including buttons and links"
+   - speakText: "<answer based on DOM analysis>"
+   - Be specific and accurate - you have access to:
+     * All element tags, text content, attributes
+     * Color information (style.color, style.backgroundColor)
+     * Font sizes (style.fontSize)
+     * All semantic structure (headings, links, buttons, etc.)
 
 3. "click" - Click on an element based on natural language description
    - User says: "click the login button", "press submit", "click on about us"
@@ -166,9 +191,15 @@ DOM STRUCTURE:
 The DOM is provided as a pseudo-HTML tree where each node has:
 - tag: HTML tag name
 - attrs: {id, class, href, aria-label, etc.}
+- style: {color, backgroundColor, fontSize} for key elements (headings, buttons, links)
 - text: visible text content
 - xpath: unique XPath identifier
 - children: array of child nodes
+
+The style field contains computed CSS values like:
+- color: rgb(255, 0, 0) or color name
+- backgroundColor: rgb(0, 0, 255) or color name
+- fontSize: 16px, 1.5em, etc.
 
 ELEMENT IDENTIFICATION RULES:
 1. Prioritize exact text matches

@@ -76,12 +76,13 @@
       return null;
     }
 
-    // Check if element is visible
+    // Check if element is visible and capture style info
+    let computedStyle = null;
     try {
-      const style = window.getComputedStyle(element);
-      if (style.display === 'none' ||
-          style.visibility === 'hidden' ||
-          parseFloat(style.opacity) === 0 ||
+      computedStyle = window.getComputedStyle(element);
+      if (computedStyle.display === 'none' ||
+          computedStyle.visibility === 'hidden' ||
+          parseFloat(computedStyle.opacity) === 0 ||
           element.getAttribute('aria-hidden') === 'true') {
         return null;
       }
@@ -96,8 +97,29 @@
       attrs: {},
       text: '',
       xpath: generateXPath(element),
+      style: {},
       children: []
     };
+
+    // Capture relevant computed styles for important elements
+    // Only capture for interactive or semantic elements to reduce size
+    const captureStyleFor = ['a', 'button', 'input', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'nav', 'header', 'footer'];
+    if (computedStyle && captureStyleFor.includes(tagName)) {
+      // Capture color information
+      const color = computedStyle.color;
+      const bgColor = computedStyle.backgroundColor;
+      const fontSize = computedStyle.fontSize;
+
+      if (color && color !== 'rgb(0, 0, 0)') { // Skip default black
+        node.style.color = color;
+      }
+      if (bgColor && bgColor !== 'rgba(0, 0, 0, 0)') { // Skip transparent
+        node.style.backgroundColor = bgColor;
+      }
+      if (fontSize) {
+        node.style.fontSize = fontSize;
+      }
+    }
 
     // Capture relevant attributes
     const relevantAttrs = ['id', 'class', 'href', 'src', 'alt', 'title',
