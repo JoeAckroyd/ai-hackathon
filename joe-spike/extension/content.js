@@ -375,72 +375,84 @@
     }
   }
 
-  // Handle transcript from speech recognition
+  // Handle transcript from speech recognition - Phase 1
   function handleTranscript(text) {
     console.log("[VoiceAssistant] handleTranscript called with:", text);
 
     const url = window.location.href;
     const title = document.title || "";
-    const pageText =
-      document.body && document.body.innerText
-        ? document.body.innerText.slice(0, 2000)
-        : "";
 
-    // Include cached DOM tree
-    const domTree = cachedDOM || captureDOM();
-    const domAge = domCaptureTimestamp ? Date.now() - domCaptureTimestamp : 0;
-
-    console.log("[VoiceAssistant] Collected page context:");
-    console.log("  - URL:", url);
-    console.log("  - Title:", title);
-    console.log("  - Page text length:", pageText.length);
-    console.log(`  - DOM snapshot age: ${domAge}ms`);
-
-    console.log("[VoiceAssistant] Sending message to background script...");
+    // PHASE 1: Send lightweight intent classification request (NO DOM)
+    console.log("[VoiceAssistant] Phase 1: Intent classification...");
 
     chrome.runtime.sendMessage(
       {
-        type: "VOICE_COMMAND",
+        type: "VOICE_COMMAND_INTENT",
         payload: {
           utterance: text,
           url,
-          title,
-          pageText,
-          dom: domTree,
-          domTimestamp: domCaptureTimestamp
-        },
+          title
+          // NO DOM
+        }
       },
       (response) => {
-        console.log("[VoiceAssistant] Received response from background:", response);
-
-        if (!response) {
-          console.error("[VoiceAssistant] No response from background");
-          speak("Sorry, I didn't get a response from the server.");
-          return;
-        }
-
-        if (!response.ok) {
-          console.error(
-            "[VoiceAssistant] Error from background/server:",
-            response.error
-          );
-          speak("Sorry, something went wrong talking to the server.");
+        if (!response || !response.ok) {
+          console.error("[VoiceAssistant] Phase 1 failed:", response?.error);
+          speak("Sorry, something went wrong.");
           return;
         }
 
         const data = response.data;
-        console.log("[VoiceAssistant] Server data:", data);
+        console.log("[VoiceAssistant] Phase 1 response:", data);
 
-        if (data && typeof data === "object") {
-          const { action, params, speakText } = data;
-          console.log("[VoiceAssistant] Extracted from response:");
-          console.log("  - action:", action);
-          console.log("  - params:", params);
-          console.log("  - speakText:", speakText);
-
-          if (speakText) speak(speakText);
-          if (action) runCommand(action, params || {});
+        // Check if we need Phase 2
+        if (data.needsDOM) {
+          console.log("[VoiceAssistant] Phase 2 needed for action:", data.actionType);
+          handlePhase2(text, url, title, data.actionType);
+        } else {
+          // Complete action immediately (navigate, none)
+          console.log("[VoiceAssistant] Action complete (no DOM needed)");
+          if (data.speakText) speak(data.speakText);
+          if (data.action) runCommand(data.action, data.params || {});
         }
+      }
+    );
+  }
+
+  // Phase 2: Send DOM for analysis
+  function handlePhase2(utterance, url, title, actionType) {
+    // Get cached DOM (already captured on page load)
+    const domTree = cachedDOM || captureDOM();
+    const domAge = domCaptureTimestamp ? Date.now() - domCaptureTimestamp : 0;
+
+    console.log("[VoiceAssistant] Phase 2: Sending DOM");
+    console.log(`  - Action type: ${actionType}`);
+    console.log(`  - DOM snapshot age: ${domAge}ms`);
+
+    chrome.runtime.sendMessage(
+      {
+        type: "VOICE_COMMAND_DOM",
+        payload: {
+          actionType,
+          utterance,
+          url,
+          title,
+          dom: domTree,
+          domTimestamp: domCaptureTimestamp
+        }
+      },
+      (response) => {
+        console.log("[VoiceAssistant] Phase 2 response:", response);
+
+        if (!response || !response.ok) {
+          console.error("[VoiceAssistant] Phase 2 failed:", response?.error);
+          speak("Sorry, something went wrong analyzing the page.");
+          return;
+        }
+
+        const data = response.data;
+        if (data.speakText) speak(data.speakText);
+        if (data.action) runCommand(data.action, data.params || {});
       }
     );
   }
